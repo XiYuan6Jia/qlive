@@ -1,82 +1,130 @@
-# qlive — 弹幕驱动的桌面动画播放器 / 轻量虚拟形象
+# qlive — 弹幕驱动的桌面虚拟形象 / 动画播放器
 
-一个面向直播间互动的桌面动画播放器（或轻量虚拟形象）。它能接收直播弹幕/事件并触发本地动画、声音或动作，用于增强直播互动体验或作为桌面挂件/虚拟形象展示。
+一个面向直播互动的桌面虚拟形象播放器。支持**透明无边框置顶窗口**、**麦克风音量驱动动画**、**B站弹幕/事件触发动作**，可用作 OBS 直播挂件或桌面宠物。
 
-核心特点
+## ✨ 核心特性
 
-- 实时接收并解析直播弹幕（示例脚本：`get_danmu.py`）。
-- 根据弹幕或本地输入触发动画（支持 GIF/逐帧动画资源目录 `animations/`）。
-- 简单的麦克风/音频示例（`mic1.py`, `mic2.py`）用于驱动表情或动作。
-- 键盘与热键控制（`keyboarding.py`）便于本地调试与控制。
-- 可扩展：你可以将响应逻辑替换为 TTS、OSC、WebSocket 通知或其它自定义动作。
+- 🖥️ **桌面置顶透明窗口** — 无边框、品红色色键抠像、始终置顶、可拖拽移动（`qlive_desktop.py`）
+- 🎤 **麦克风音量驱动** — 实时检测分贝值，说话时自动切换到"讲话"动画，静音时切回默认待机
+- 💬 **B站直播弹幕联动** — 接收弹幕消息，关键词映射到指定动画（如"摸头"→摸头动画、"哈气"→射击动画）
+- 🎬 **GIF 逐帧播放** — 支持 GIF 动画资源，可调节播放速度和缩放
+- ⌨️ **键盘快捷键** — `Ctrl+0/1/2` 手动切换动画，ESC 退出
+- 🖱️ **右键菜单** — 内置退出选项
+- 🔧 **模块化设计** — 弹幕接收、音频检测、动画播放各自独立，易于扩展
 
-目录概览
+## 📁 项目结构
 
-- `client.py`：示例客户端/测试脚本。
-- `get_danmu.py`：连接直播弹幕源并解析消息。
-- `gif_to_frames.py`：把 GIF 拆分为帧供播放器使用。
-- `keyboarding.py`：键盘事件与热键处理。
-- `mic1.py`, `mic2.py`：麦克风输入演示与不同处理方式。
-- `qlive.py`, `qlive2.py`：项目主入口/实验版入口（启动程序）。
-- `animations/`：放置动画帧或资源的文件夹。
+| 文件 | 说明 |
+|------|------|
+| `qlive_desktop.py` | ⭐ **主程序** — 桌面透明置顶虚拟形象（推荐使用） |
+| `qlive2.py` | 增强版 — 含 TCP 服务端接收弹幕事件，支持弹幕关键词触发动画 |
+| `qlive.py` | 基础版 — 普通窗口模式，麦克风 + 键盘控制动画 |
+| `get_danmu.py` | B站直播间弹幕监听，通过 `client.py` 转发到 `qlive2.py` |
+| `client.py` | TCP 客户端，将弹幕数据 JSON 序列化后发送到服务端 |
+| `gif_to_frames.py` | 工具：将 GIF 拆解为 PIL Image 帧列表 |
+| `keyboarding.py` | 键盘监听演示（全局热键 + Pygame 本地按键） |
+| `mic1.py` | 麦克风分贝检测演示（命令行实时显示） |
+| `mic2.py` | 高级麦克风监测演示（含历史图表） |
+| `exampleoftopmost.py` | 窗口置顶技术验证（pywin32） |
+| `animations/` | 动画资源目录，放置 `.gif` 文件 |
+| `credential.json` | B站 API 凭证（需自行创建，已 .gitignore） |
 
-快速开始（Windows）
+## 🚀 快速开始（Windows）
 
-建议在虚拟环境中运行：
+### 1. 创建虚拟环境并安装依赖
 
 ```powershell
 python -m venv .venv
-.\\.venv\\Scripts\\Activate.ps1
-pip install -r requirements.txt
+.\.venv\Scripts\Activate.ps1
+pip install pygame pyaudio numpy pillow pywin32 keyboard bilibili-api
 ```
 
-若无 `requirements.txt`，可先安装基础依赖：
+### 2. 运行桌面虚拟形象（推荐）
 
 ```powershell
-pip install pygame requests websocket-client
+.\.venv\Scripts\Activate.ps1
+python qlive_desktop.py
 ```
 
-运行主程序示例：
+窗口将出现在屏幕右下角，品红色背景在 OBS 中可通过色键抠除。
+
+### 3. （可选）联动 B 站弹幕
+
+1. 创建 `credential.json`（B站 API 凭证，参考下方配置）
+2. 先启动 `qlive2.py`（内置 TCP 服务端，监听 `localhost:9999`）
+3. 再运行 `get_danmu.py`（连接 B 站直播间，弹幕转发到 qlive2）
 
 ```powershell
-.\\.venv\\Scripts\\Activate.ps1
+# 终端 1
 python qlive2.py
+
+# 终端 2
+python get_danmu.py
 ```
 
-或
+## ⚙️ 配置
 
-```powershell
-python qlive.py
-```
-
-配置
-
-若需连接第三方弹幕/房间 API，请在仓库根目录创建 `credential.json`（或按脚本内说明编辑）例如：
+`credential.json` 示例（B站 Credential）：
 
 ```json
 {
-  "provider": "example",
-  "room_id": "12345",
-  "token": "your_token"
+  "dedeuserid": "",
+  "sessdata": "",
+  "bili_jct": "",
+  "buvid3": "",
+  "ac_time_value": ""
 }
 ```
 
-安全提示：请将包含密钥的文件加入 `.gitignore`，不要将真实凭证推送到公共仓库。
+> ⚠️ **安全提示**：该文件已加入 `.gitignore`，请勿将真实凭证提交到公共仓库。
 
-定制与扩展建议
+## 🎮 操作说明
 
-- 将 `get_danmu.py` 中的解析逻辑替换为你的弹幕服务实现（例如斗鱼/哔哩哔哩/自定义 WebSocket）。
-- 在 `qlive2.py` 中集成动作映射表：弹幕关键词 -> 动画/音效/动作。
-- 增加一个简单的 GUI 设置面板以控制热键、动画映射与日志级别。
+| 操作 | 效果 |
+|------|------|
+| 麦克风说话 | 自动切到"讲话"动画 |
+| 静音 | 自动切回"待机"动画 |
+| `Ctrl+0` | 强制切回默认待机动画 |
+| `Ctrl+1` | 强制播放动画1 (wizzle2) |
+| `Ctrl+2` | 强制播放动画2 (shoot) |
+| 鼠标左键拖拽 | 移动窗口位置 |
+| 鼠标右键 | 弹出菜单（退出） |
+| `ESC` | 退出程序 |
 
-贡献与开发者提示
+## 🎨 自定义动画
 
-- 若添加新依赖，请在 `requirements.txt` 中列出并提交。
-- 提交前确保不含敏感凭证；建议提供最小可复现示例以便审查。
+在 `animations/` 目录下放置 GIF 文件，然后在 `qlive_desktop.py` 的 `load_gif()` 方法中注册：
 
-下一步（可选）
+```python
+self.gif_custom = gif("animations/你的动画.gif", scale=1, speed=1.0)
+```
 
-- 我可以为你生成 `requirements.txt`（扫描项目导入并推测依赖），或添加运行示例和截图。
-- 想要哪些示例：`requirements.txt`、演示动画、还是一个简单的弹幕->动画映射示例？告诉我你的选择。
+### 弹幕关键词 → 动画映射
+
+在 `qlive2.py` 的 `listener._process()` 中添加规则：
+
+```python
+if "关键词" in msg:
+    self.trigger_animation = 'custom'
+    self.triggered = True
+```
+
+## 📦 依赖
+
+- **pygame** — 图形渲染与窗口管理
+- **pyaudio** — 麦克风音频采集
+- **numpy** — 音频数据处理
+- **Pillow** — GIF 帧解析
+- **pywin32** — Windows 窗口置顶/透明/色键
+- **keyboard** — 全局热键
+- **bilibili-api** — B站直播弹幕 API（可选）
+
+## 🔮 扩展方向
+
+- [ ] 集成 TTS 语音合成回应弹幕
+- [ ] 支持更多动画图层叠加
+- [ ] GUI 设置面板（热键配置、动画映射）
+- [ ] OSC/WebSocket 通知输出
+- [ ] 支持 OBS 的 Spout/Syphon 视频流输出
 
 
