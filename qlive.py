@@ -1,9 +1,10 @@
 import pygame as pg
 from gif_to_frames import extract_frames as read_gif
-import queue, threading, os, math
+import threading, os, math
 import pyaudio
 import numpy as np
 import keyboard
+from collections import deque
 
 class gif:
     def __init__(self, path, scale=1, speed=1, start_frame=1):
@@ -47,9 +48,15 @@ class qlive:
         self.clock = pg.time.Clock()
         self.running = True
         self.fps = 30
-        self.db_queue = queue.Queue()
+
+        # 用共享变量+锁替代Queue，只保留最新值
+        self.db_lock = threading.Lock()
+        self.latest_db = 0.0
+        # 平滑窗口：记录最近N个dB值取平均，避免动画闪烁
+        self.db_history = deque(maxlen=5)
         self.is_db_monitoring = True
         self.srart_db_monitoring()
+        
         self.force_play = False
         self.pressed_keys = set()
 
@@ -72,7 +79,7 @@ class qlive:
             db_thread.start()
 
     def db_monitor(self):
-        """使用pyaudio进行分贝检测并将结果放入队列"""
+        """使用pyaudio进行分贝检测，通过共享变量实时传递最新值（无延迟）"""
         CHUNK = 1024
         FORMAT = pyaudio.paInt16
         CHANNELS = 1
@@ -99,8 +106,10 @@ class qlive:
                 else:
                     db = 0
                 
-                self.db_queue.put(db)
-                pg.time.wait(100)
+                # 用锁保护，直接写入共享变量，无队列延迟
+                with self.db_lock:
+                    self.latest_db = db
+                # 移除 pg.time.wait(100)，让音频线程全速运行 (~23ms/次)
                 
         except Exception as e:
             print(f"DB监测错误: {e}")
@@ -124,13 +133,19 @@ class qlive:
 
     def run(self):
         while self.running:
-            #麦克风
-            if self.is_db_monitoring and not self.db_queue.empty():
-                db_value = self.db_queue.get()
-                if db_value < 15 and not self.force_play:
-                    self.layer_1 = self.gif0
-                elif not self.force_play:
-                    self.layer_1 = self.gif_speak
+            # 麦克风：从共享变量读取最新dB值，用平滑窗口避免闪烁
+            if self.is_db_monitoring:
+                with self.db_lock:
+                    current_db = self.latest_db
+                self.db_history.append(current_db)
+                # 平滑平均值
+                smoothed_db = sum(self.db_history) / len(self.db_history)
+                
+                if not self.force_play:
+                    if smoothed_db < 15:
+                        self.layer_1 = self.gif0
+                    else:
+                        self.layer_1 = self.gif_speak
 
             #键盘事件
             for event in pg.event.get():
