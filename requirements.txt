@@ -1,0 +1,19 @@
+# ============================================
+# qlive 依赖清单
+# ============================================
+
+# ── 核心依赖（qlive_desktop.py 必需）──
+pygame>=2.6
+PyAudio>=0.2
+numpy>=2.0
+Pillow>=12.0
+pywin32>=312
+
+# ── 键盘热键（qlive.py / qlive2.py / keyboarding.py 需要）──
+keyboard>=0.13
+
+# ── B站弹幕（get_danmu.py 需要）──
+bilibili-api-python>=17.0
+
+# ── 打包工具（仅构建时使用）──
+# pyinstaller>=6.0

@@ -36,7 +36,7 @@
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install pygame pyaudio numpy pillow pywin32 keyboard bilibili-api
+pip install -r requirements.txt
 ```
 
 ### 2. 运行桌面虚拟形象（推荐）
