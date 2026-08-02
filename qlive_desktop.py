@@ -1,6 +1,6 @@
 import pygame as pg
 from gif_to_frames import extract_frames as read_gif
-import threading, os, math
+import threading, os, math, random, time
 import pyaudio
 import numpy as np
 from collections import deque
@@ -20,6 +20,11 @@ WIN_W, WIN_H = 800, 600
 MIN_SCALE, MAX_SCALE = 0.2, 4.0          # 缩放比例范围
 RESIZE_THRESHOLD = 6                     # 判定为"拖拽缩放"的最小移动像素
 RESIZE_SENSITIVITY = 400.0               # 灵敏度：鼠标每移动 N 像素 → 比例变化 100%
+
+# 空闲随机游走参数
+IDLE_WANDER_DELAY = 180.0        # 无鼠标动作多少秒后开始随机游走（3 分钟|180.0）
+WANDER_RETARGET_INTERVAL = 2.0   # 每多少秒重新选择一个随机目标点
+WANDER_SPEED = 150.0             # 游走移动速度（像素/秒）
 
 
 def get_cursor_screen_pos():
@@ -148,6 +153,13 @@ class qlive_desktop:
         self.start_db_monitoring()
 
         self.force_play = False
+
+        # ── 空闲随机游走状态 ──
+        self._last_input_time = time.time()                  # 最近一次鼠标活动时间
+        self._last_cursor_pos = get_cursor_screen_pos()      # 上一帧鼠标屏幕位置
+        self._wandering = False                              # 是否正在随机游走
+        self._wander_target = None                           # 当前游走目标点 (x, y)
+        self._wander_retarget_time = 0.0                     # 下次重新选目标的时间
 
     def start_db_monitoring(self):
         if self.is_db_monitoring:
@@ -303,6 +315,60 @@ class qlive_desktop:
         self._menu_visible = False
         self._menu_rects = []
 
+    def _track_mouse_activity(self):
+        """轮询鼠标屏幕坐标，坐标变化即视为用户活动，刷新空闲计时。
+        注意不能用 pg.MOUSEMOTION：窗口自身移动也会产生该事件，会导致误判。"""
+        cur = get_cursor_screen_pos()
+        if cur != self._last_cursor_pos:
+            self._last_input_time = time.time()
+            self._last_cursor_pos = cur
+
+    def _stop_wandering(self):
+        """停止随机游走"""
+        if self._wandering:
+            self._wandering = False
+            self._wander_target = None
+
+    def _update_wandering(self, dt):
+        """空闲超过 IDLE_WANDER_DELAY 秒后，让窗口在屏幕内随机游走"""
+        # 正在拖拽/缩放时视为用户活动
+        if self.dragging or self._rmb_down:
+            self._last_input_time = time.time()
+            self._stop_wandering()
+            return
+
+        idle_time = time.time() - self._last_input_time
+        if idle_time < IDLE_WANDER_DELAY:
+            self._stop_wandering()
+            return
+        self._wandering = True
+
+        hwnd = pg.display.get_wm_info()["window"]
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        win_w, win_h = right - left, bottom - top
+
+        screen_w = win32api.GetSystemMetrics(0)
+        screen_h = win32api.GetSystemMetrics(1)
+
+        now = time.time()
+        # 到达目标或到时间 → 重新随机选一个目标点（确保窗口完整留在屏幕内）
+        if self._wander_target is None or now >= self._wander_retarget_time:
+            max_x = max(0, screen_w - win_w)
+            max_y = max(0, screen_h - win_h)
+            self._wander_target = (random.randint(0, max_x), random.randint(0, max_y))
+            self._wander_retarget_time = now + WANDER_RETARGET_INTERVAL
+
+        tx, ty = self._wander_target
+        dx, dy = tx - left, ty - top
+        dist = math.hypot(dx, dy)
+        if dist < 2:
+            self._wander_target = None  # 已到达，下一帧重新选点
+        else:
+            step = min(WANDER_SPEED * dt, dist)
+            new_x = left + dx / dist * step
+            new_y = top + dy / dist * step
+            set_window_pos(hwnd, int(new_x), int(new_y))
+
     def run(self):
         while self.running:
             # 麦克风：从共享变量读取最新dB值
@@ -318,10 +384,17 @@ class qlive_desktop:
                     else:
                         self.layer_1 = self.gif_speak
 
+            # 追踪鼠标是否活动（轮询屏幕绝对坐标，窗口自身移动不会误判）
+            self._track_mouse_activity()
+
             # 事件处理
             for event in pg.event.get():
                 if event.type == pg.QUIT:
                     self.running = False
+
+                # 任何鼠标按键事件都视为用户活动（窗口移动不会产生按键事件）
+                if event.type in (pg.MOUSEBUTTONDOWN, pg.MOUSEBUTTONUP):
+                    self._last_input_time = time.time()
 
                 # 右键菜单显示时：点击任意位置处理菜单（坐标转逻辑空间）
                 if self._menu_visible:
@@ -418,7 +491,10 @@ class qlive_desktop:
             pg.display.flip()
             # flip() 可能被 SDL 重置 Z-order → 立即修复置顶
             force_topmost(self._hwnd)
-            self.clock.tick(self.fps)
+            dt = self.clock.tick(self.fps) / 1000.0
+
+            # ── 空闲超过阈值后窗口随机游走 ──
+            self._update_wandering(dt)
 
         self._topmost_running = False
         pg.quit()
