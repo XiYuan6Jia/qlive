@@ -16,6 +16,11 @@ COLOR_KEY = (255, 0, 255)  # 品红色作为透明色键
 # 窗口尺寸（所有动画资源统一 800×600）
 WIN_W, WIN_H = 800, 600
 
+# 右键拖拽缩放参数
+MIN_SCALE, MAX_SCALE = 0.2, 4.0          # 缩放比例范围
+RESIZE_THRESHOLD = 6                     # 判定为"拖拽缩放"的最小移动像素
+RESIZE_SENSITIVITY = 400.0               # 灵敏度：鼠标每移动 N 像素 → 比例变化 100%
+
 
 def get_cursor_screen_pos():
     """获取鼠标在屏幕上的绝对坐标"""
@@ -119,6 +124,18 @@ class qlive_desktop:
         self._drag_anchor_mouse_x = 0
         self._drag_anchor_mouse_y = 0
 
+        # ── 右键拖拽缩放状态 ──
+        self.window_scale = 1.0           # 当前窗口缩放比例
+        self._rmb_down = False            # 右键是否按下
+        self._resizing = False            # 是否正在拖拽缩放
+        self._resize_anchor_mouse_x = 0   # 缩放起始鼠标屏幕坐标
+        self._resize_anchor_mouse_y = 0
+        self._resize_start_scale = 1.0    # 缩放起始时的比例
+        self._window_size = (WIN_W, WIN_H)
+
+        # 逻辑画布：固定 800×600，最终用最邻近算法缩放到窗口尺寸
+        self._render_surf = pg.Surface((WIN_W, WIN_H))
+
         # 右键菜单
         self._menu_visible = False
         self._menu_rects = []
@@ -145,6 +162,7 @@ class qlive_desktop:
         RATE = 44100
 
         p = pyaudio.PyAudio()
+        stream = None
 
         try:
             stream = p.open(format=FORMAT,
@@ -171,8 +189,9 @@ class qlive_desktop:
         except Exception as e:
             print(f"DB监测错误: {e}")
         finally:
-            stream.stop_stream()
-            stream.close()
+            if stream is not None:
+                stream.stop_stream()
+                stream.close()
             p.terminate()
 
     def load_gif(self):
@@ -185,7 +204,39 @@ class qlive_desktop:
 
     def display_gif(self, gifx: gif, x=0, y=0):
         frame = gifx.get_frame()
-        self.screen.blit(frame, (x, y))
+        self._render_surf.blit(frame, (x, y))
+
+    def _to_logical_pos(self, pos):
+        """将窗口物理坐标转换为逻辑坐标（固定 800×600 画布空间）"""
+        w, h = self.screen.get_size()
+        if w == WIN_W and h == WIN_H:
+            return pos
+        return (int(pos[0] * WIN_W / w), int(pos[1] * WIN_H / h))
+
+    def _apply_window_scale(self):
+        """按 self.window_scale 重建窗口以匹配新尺寸，保持右下角锚点不变"""
+        new_w = max(1, int(round(WIN_W * self.window_scale)))
+        new_h = max(1, int(round(WIN_H * self.window_scale)))
+        if (new_w, new_h) == self._window_size:
+            return
+
+        # 记录当前窗口右下角作为缩放锚点
+        hwnd = pg.display.get_wm_info()["window"]
+        _l, _t, right, bottom = win32gui.GetWindowRect(hwnd)
+        anchor_right, anchor_bottom = right, bottom
+
+        self._window_size = (new_w, new_h)
+        # 重建窗口以匹配新尺寸（SDL 窗口尺寸即绘制表面尺寸）
+        self.screen = pg.display.set_mode((new_w, new_h), pg.NOFRAME)
+        pg.display.set_caption("Qlive Desktop")
+        hwnd = pg.display.get_wm_info()["window"]
+        make_window_transparent_and_topmost(hwnd)
+        self._hwnd = hwnd
+
+        # 保持窗口右下角固定
+        win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST,
+                              anchor_right - new_w, anchor_bottom - new_h, 0, 0,
+                              win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
 
     # ── 右键菜单 ──
     def _show_context_menu(self, mouse_x, mouse_y):
@@ -229,18 +280,18 @@ class qlive_desktop:
         bg_surf = pg.Surface((self._menu_bg_rect.width, self._menu_bg_rect.height))
         bg_surf.fill((60, 60, 60))
         pg.draw.rect(bg_surf, (140, 140, 140), bg_surf.get_rect(), 1)
-        self.screen.blit(bg_surf, (self._menu_bg_rect.x, self._menu_bg_rect.y))
+        self._render_surf.blit(bg_surf, (self._menu_bg_rect.x, self._menu_bg_rect.y))
 
-        mouse_pos = pg.mouse.get_pos()
+        mouse_pos = self._to_logical_pos(pg.mouse.get_pos())
         for item_rect, label, _key in self._menu_rects:
             if item_rect.collidepoint(mouse_pos):
                 hover_surf = pg.Surface((item_rect.width, item_rect.height))
                 hover_surf.fill((80, 120, 200))
-                self.screen.blit(hover_surf, (item_rect.x, item_rect.y))
+                self._render_surf.blit(hover_surf, (item_rect.x, item_rect.y))
 
             text_surf = font.render(label, True, (255, 255, 255))
             text_rect = text_surf.get_rect(midleft=(item_rect.x + 8, item_rect.centery))
-            self.screen.blit(text_surf, text_rect)
+            self._render_surf.blit(text_surf, text_rect)
 
     def _handle_context_menu_click(self, pos):
         """处理右键菜单点击"""
@@ -272,10 +323,10 @@ class qlive_desktop:
                 if event.type == pg.QUIT:
                     self.running = False
 
-                # 右键菜单显示时：点击任意位置处理菜单
+                # 右键菜单显示时：点击任意位置处理菜单（坐标转逻辑空间）
                 if self._menu_visible:
                     if event.type == pg.MOUSEBUTTONDOWN:
-                        self._handle_context_menu_click(event.pos)
+                        self._handle_context_menu_click(self._to_logical_pos(event.pos))
                     continue
 
                 if event.type == pg.KEYDOWN:
@@ -304,9 +355,30 @@ class qlive_desktop:
                 if event.type == pg.MOUSEBUTTONUP and event.button == 1:
                     self.dragging = False
 
-                # 右键弹出菜单
+                # ── 右键拖拽缩放窗口 ──
                 if event.type == pg.MOUSEBUTTONDOWN and event.button == 3:
-                    self._show_context_menu(*event.pos)
+                    if not self._rmb_down:
+                        self._rmb_down = True
+                        self._resizing = False
+                        self._resize_anchor_mouse_x, self._resize_anchor_mouse_y = \
+                            get_cursor_screen_pos()
+                        self._resize_start_scale = self.window_scale
+
+                if event.type == pg.MOUSEBUTTONUP and event.button == 3:
+                    if self._rmb_down:
+                        self._rmb_down = False
+                        if not self._resizing:
+                            # 右键单击（未发生拖拽）→ 弹出菜单
+                            self._show_context_menu(*self._to_logical_pos(event.pos))
+                        self._resizing = False
+
+                # 按住右键移动超过阈值 → 进入缩放模式
+                if event.type == pg.MOUSEMOTION and self._rmb_down and not self._resizing:
+                    cur_x, cur_y = get_cursor_screen_pos()
+                    dx = cur_x - self._resize_anchor_mouse_x
+                    dy = cur_y - self._resize_anchor_mouse_y
+                    if math.hypot(dx, dy) > RESIZE_THRESHOLD:
+                        self._resizing = True
 
             # ── 拖拽更新：基于屏幕绝对坐标差移动窗口 ──
             if self.dragging:
@@ -316,14 +388,32 @@ class qlive_desktop:
                 hwnd = pg.display.get_wm_info()["window"]
                 set_window_pos(hwnd, new_x, new_y)
 
-            # 用品红色（透明色键）填充背景
-            self.screen.fill(COLOR_KEY)
+            # ── 右键拖拽缩放更新：按鼠标位移计算缩放比例 ──
+            if self._rmb_down and self._resizing:
+                cur_x, cur_y = get_cursor_screen_pos()
+                dx = cur_x - self._resize_anchor_mouse_x
+                dy = cur_y - self._resize_anchor_mouse_y
+                new_scale = self._resize_start_scale * (1.0 + (dx + dy) / RESIZE_SENSITIVITY)
+                new_scale = max(MIN_SCALE, min(MAX_SCALE, new_scale))
+                if new_scale != self.window_scale:
+                    self.window_scale = new_scale
+                    self._apply_window_scale()
+
+            # 在逻辑画布（固定 800×600）上绘制内容
+            self._render_surf.fill(COLOR_KEY)
 
             # 图层1
             self.display_gif(self.layer_1)
 
             # 右键菜单（最顶层绘制）
             self._draw_context_menu()
+
+            # 用最邻近算法将逻辑画布缩放到窗口尺寸并显示
+            win_w, win_h = self.screen.get_size()
+            if (win_w, win_h) == (WIN_W, WIN_H):
+                self.screen.blit(self._render_surf, (0, 0))
+            else:
+                pg.transform.scale(self._render_surf, (win_w, win_h), self.screen)
 
             pg.display.flip()
             # flip() 可能被 SDL 重置 Z-order → 立即修复置顶
