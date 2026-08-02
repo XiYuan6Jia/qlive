@@ -22,6 +22,7 @@ exe = EXE(
     a.datas,
     [],
     name='qlive_desktop',
+    icon='icon.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
