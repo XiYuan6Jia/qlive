@@ -27,6 +27,23 @@ WANDER_RETARGET_INTERVAL = 2.0   # 每多少秒重新选择一个随机目标点
 WANDER_SPEED = 150.0             # 游走移动速度（像素/秒）
 
 
+def get_chinese_font(size):
+    """获取支持中文的系统字体（优先微软雅黑），找不到则退回 pygame 默认字体"""
+    font_paths = (
+        r"C:\Windows\Fonts\msyh.ttc",    # 微软雅黑
+        r"C:\Windows\Fonts\msyhbd.ttc",  # 微软雅黑粗体
+        r"C:\Windows\Fonts\simhei.ttf",  # 黑体
+        r"C:\Windows\Fonts\simsun.ttc",  # 宋体
+    )
+    for path in font_paths:
+        if os.path.exists(path):
+            try:
+                return pg.font.Font(path, size)
+            except Exception:
+                continue
+    return pg.font.Font(None, size)
+
+
 def get_cursor_screen_pos():
     """获取鼠标在屏幕上的绝对坐标"""
     return win32gui.GetCursorPos()
@@ -144,6 +161,7 @@ class qlive_desktop:
         # 右键菜单
         self._menu_visible = False
         self._menu_rects = []
+        self._menu_pos = (0, 0)  # 菜单显示位置（逻辑坐标），调节参数后原地刷新
 
         # 用共享变量+锁替代Queue，只保留最新值
         self.db_lock = threading.Lock()
@@ -160,6 +178,11 @@ class qlive_desktop:
         self._wandering = False                              # 是否正在随机游走
         self._wander_target = None                           # 当前游走目标点 (x, y)
         self._wander_retarget_time = 0.0                     # 下次重新选目标的时间
+
+        # ── 空闲随机游走参数（右键菜单可调，初始取模块常量）──
+        self.idle_wander_delay = IDLE_WANDER_DELAY
+        self.wander_retarget_interval = WANDER_RETARGET_INTERVAL
+        self.wander_speed = WANDER_SPEED
 
     def start_db_monitoring(self):
         if self.is_db_monitoring:
@@ -255,9 +278,14 @@ class qlive_desktop:
         """在鼠标位置显示右键菜单"""
         self._menu_visible = True
         self._menu_rects = []
-        font = pg.font.Font(None, 22)
+        self._menu_pos = (mouse_x, mouse_y)
+        font = get_chinese_font(22)
 
+        # 三个挂机游走参数：点击行左半区域减小、右半区域增大（- / +）
         items = [
+            (f"等待时间: {int(self.idle_wander_delay)}秒", "delay"),
+            (f"换点间隔: {self.wander_retarget_interval:.1f}秒", "retarget"),
+            (f"游走速度: {int(self.wander_speed)}px/s", "speed"),
             ("退出 (Exit)", "exit"),
         ]
 
@@ -287,7 +315,7 @@ class qlive_desktop:
         """绘制右键菜单"""
         if not self._menu_visible:
             return
-        font = pg.font.Font(None, 22)
+        font = get_chinese_font(22)
 
         bg_surf = pg.Surface((self._menu_bg_rect.width, self._menu_bg_rect.height))
         bg_surf.fill((60, 60, 60))
@@ -295,25 +323,62 @@ class qlive_desktop:
         self._render_surf.blit(bg_surf, (self._menu_bg_rect.x, self._menu_bg_rect.y))
 
         mouse_pos = self._to_logical_pos(pg.mouse.get_pos())
-        for item_rect, label, _key in self._menu_rects:
+        for item_rect, label, key in self._menu_rects:
             if item_rect.collidepoint(mouse_pos):
                 hover_surf = pg.Surface((item_rect.width, item_rect.height))
                 hover_surf.fill((80, 120, 200))
                 self._render_surf.blit(hover_surf, (item_rect.x, item_rect.y))
 
+            # 参数行：左右两端画 - / + 提示点击方向
+            is_param = key in ("delay", "retarget", "speed")
+            if is_param:
+                minus_surf = font.render("−", True, (255, 255, 255))
+                plus_surf = font.render("+", True, (255, 255, 255))
+                self._render_surf.blit(minus_surf, minus_surf.get_rect(
+                    midleft=(item_rect.x + 4, item_rect.centery)))
+                self._render_surf.blit(plus_surf, plus_surf.get_rect(
+                    midright=(item_rect.right - 4, item_rect.centery)))
+
             text_surf = font.render(label, True, (255, 255, 255))
-            text_rect = text_surf.get_rect(midleft=(item_rect.x + 8, item_rect.centery))
+            label_x = item_rect.x + 20 if is_param else item_rect.x + 8
+            text_rect = text_surf.get_rect(midleft=(label_x, item_rect.centery))
             self._render_surf.blit(text_surf, text_rect)
 
     def _handle_context_menu_click(self, pos):
         """处理右键菜单点击"""
+        x, y = pos
+        hit = False
         for item_rect, _label, key in self._menu_rects:
-            if item_rect.collidepoint(pos):
-                if key == "exit":
-                    self.running = False
-                break
-        self._menu_visible = False
-        self._menu_rects = []
+            if not item_rect.collidepoint(pos):
+                continue
+            hit = True
+            if key == "exit":
+                self.running = False
+                self._menu_visible = False
+                self._menu_rects = []
+            elif key in ("delay", "retarget", "speed"):
+                # 左半区域减小、右半区域增大；调节后原地刷新菜单便于连续操作
+                self._adjust_wander_param(key, x >= item_rect.centerx)
+                self._show_context_menu(*self._menu_pos)
+            else:
+                self._menu_visible = False
+                self._menu_rects = []
+            break
+        # 点击菜单项以外的区域 → 关闭菜单（恢复左键自动解锁）
+        if not hit:
+            self._menu_visible = False
+            self._menu_rects = []
+
+    def _adjust_wander_param(self, key, increase):
+        """按参数行调节游走参数（increase=True 增大，False 减小）"""
+        delta = 1 if increase else -1
+        if key == "delay":  # 等待时间：±60 秒，范围 30~1800
+            self.idle_wander_delay = max(30, min(1800, self.idle_wander_delay + delta * 60))
+        elif key == "retarget":  # 换点间隔：±1 秒，范围 1~10
+            self.wander_retarget_interval = max(1.0, min(10.0,
+                round(self.wander_retarget_interval + delta, 1)))
+        elif key == "speed":  # 游走速度：±50 px/s，范围 20~1000
+            self.wander_speed = max(20, min(1000, self.wander_speed + delta * 50))
 
     def _track_mouse_activity(self):
         """轮询鼠标屏幕坐标，坐标变化即视为用户活动，刷新空闲计时。
@@ -338,7 +403,7 @@ class qlive_desktop:
             return
 
         idle_time = time.time() - self._last_input_time
-        if idle_time < IDLE_WANDER_DELAY:
+        if idle_time < self.idle_wander_delay:
             self._stop_wandering()
             return
         self._wandering = True
@@ -356,7 +421,7 @@ class qlive_desktop:
             max_x = max(0, screen_w - win_w)
             max_y = max(0, screen_h - win_h)
             self._wander_target = (random.randint(0, max_x), random.randint(0, max_y))
-            self._wander_retarget_time = now + WANDER_RETARGET_INTERVAL
+            self._wander_retarget_time = now + self.wander_retarget_interval
 
         tx, ty = self._wander_target
         dx, dy = tx - left, ty - top
@@ -364,7 +429,7 @@ class qlive_desktop:
         if dist < 2:
             self._wander_target = None  # 已到达，下一帧重新选点
         else:
-            step = min(WANDER_SPEED * dt, dist)
+            step = min(self.wander_speed * dt, dist)
             new_x = left + dx / dist * step
             new_y = top + dy / dist * step
             set_window_pos(hwnd, int(new_x), int(new_y))
