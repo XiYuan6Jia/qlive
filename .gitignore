@@ -18,6 +18,9 @@ build/
 dist/
 *.manifest
 
+# 打包用压缩动画资源（由 animations/ 生成，可随时重建）
+animations.zip
+
 # ─── 敏感凭据（含 B 站 sessdata / bili_jct / buvid3）───
 credential.json
 

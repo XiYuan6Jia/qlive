@@ -4,7 +4,7 @@ a = Analysis(
     ['qlive_desktop.py'],
     pathex=[],
     binaries=[],
-    datas=[('animations', 'animations')],
+    datas=[('animations.zip', '.')],
     hiddenimports=['pyaudio', 'numpy', 'PIL', 'PIL.Image', 'pygame', 'win32gui', 'win32con', 'win32api'],
     hookspath=[],
     hooksconfig={},

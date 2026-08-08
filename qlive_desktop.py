@@ -1,6 +1,6 @@
 import pygame as pg
 from gif_to_frames import extract_frames as read_gif
-import threading, os, math, random, time
+import threading, os, math, random, time, sys, tempfile, zipfile, hashlib
 import pyaudio
 import numpy as np
 from collections import deque
@@ -10,6 +10,54 @@ if os.name == 'nt':
     import win32gui
     import win32con
     import win32api
+
+
+# ── 资源自解压：动画资源压缩进 animations.zip 内嵌于 exe，运行时自动解压 ──
+def _embedded_zip_path():
+    """返回内嵌 animations.zip 的完整路径（打包后位于 sys._MEIPASS，开发时位于项目根目录）"""
+    if getattr(sys, 'frozen', False):
+        return os.path.join(sys._MEIPASS, 'animations.zip')
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'animations.zip')
+
+
+def resource_dir():
+    """
+    返回动画资源目录。
+    - 开发模式：项目根目录下的 animations/（直接使用）。
+    - 打包模式：把内嵌的 animations.zip 解压到系统临时目录，
+      以 zip 内容哈希为缓存键，仅首次启动解压，之后直接复用。
+    """
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    dev_dir = os.path.join(project_dir, 'animations')
+    if not getattr(sys, 'frozen', False):
+        return dev_dir if os.path.isdir(dev_dir) else project_dir
+
+    zip_path = _embedded_zip_path()
+    if not os.path.exists(zip_path):
+        # 兼容：某些打包方式直接内嵌了解压后的目录
+        fallback = os.path.join(sys._MEIPASS, 'animations')
+        return fallback if os.path.isdir(fallback) else sys._MEIPASS
+
+    try:
+        with open(zip_path, 'rb') as f:
+            digest = hashlib.md5(f.read()).hexdigest()[:12]
+    except Exception:
+        digest = 'unknown'
+
+    cache_dir = os.path.join(tempfile.gettempdir(), 'qlive_desktop_anim', digest)
+    marker = os.path.join(cache_dir, '.extracted')
+    if os.path.exists(marker):
+        return cache_dir
+
+    os.makedirs(cache_dir, exist_ok=True)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(cache_dir)
+        with open(marker, 'w', encoding='utf-8') as f:
+            f.write(zip_path)
+    except Exception as e:
+        print(f"[qlive] 解压动画资源失败: {e}")
+    return cache_dir
 
 COLOR_KEY = (255, 0, 255)  # 品红色作为透明色键
 
@@ -230,10 +278,11 @@ class qlive_desktop:
             p.terminate()
 
     def load_gif(self):
-        self.gif0 = gif("animations/default.gif", scale=1)
-        self.gif1 = gif("animations/wizzle2.gif", scale=1, speed=0.75)
-        self.gif2 = gif("animations/shoot.gif", scale=1, speed=0.75)
-        self.gif_speak = gif("animations/speak.gif", scale=1, speed=1.25)
+        res = resource_dir()
+        self.gif0 = gif(os.path.join(res, "default.gif"), scale=1)
+        self.gif1 = gif(os.path.join(res, "wizzle2.gif"), scale=1, speed=0.75)
+        self.gif2 = gif(os.path.join(res, "shoot.gif"), scale=1, speed=0.75)
+        self.gif_speak = gif(os.path.join(res, "speak.gif"), scale=1, speed=1.25)
 
         self.layer_1 = self.gif0
 
